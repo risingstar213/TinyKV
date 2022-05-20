@@ -32,7 +32,7 @@ func (server *Server) RawPut(_ context.Context, req *kvrpcpb.RawPutRequest) (*kv
 	// Your Code Here (1).
 	// Hint: Consider using Storage.Modify to store data to be modified
 	var mod storage.Modify
-	mod.Data = storage.Put {
+	mod.Data = storage.Put{
 		Key:   req.Key,
 		Value: req.Value,
 		Cf:    req.Cf,
@@ -48,7 +48,7 @@ func (server *Server) RawDelete(_ context.Context, req *kvrpcpb.RawDeleteRequest
 	// Your Code Here (1).
 	// Hint: Consider using Storage.Modify to store data to be deleted
 	var mod storage.Modify
-	mod.Data = storage.Delete {
+	mod.Data = storage.Delete{
 		Key: req.Key,
 		Cf:  req.Cf,
 	}
