@@ -217,8 +217,6 @@ func (r *Raft) sendAppend(to uint64) bool {
 	return true
 }
 
-
-
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
@@ -233,9 +231,9 @@ func (r *Raft) sendHeartbeat(to uint64) {
 
 func (r *Raft) sendRequestVote(to uint64) {
 	msg := pb.Message{
-		From: r.id,
-		To: to,
-		Term: r.Term,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
 		MsgType: pb.MessageType_MsgRequestVote,
 	}
 	r.msgs = append(r.msgs, msg)
@@ -243,11 +241,11 @@ func (r *Raft) sendRequestVote(to uint64) {
 
 func (r *Raft) sendRequestVoteResponse(to uint64, reject bool) {
 	msg := pb.Message{
-		From: r.id,
-		To: to,
-		Term: r.Term,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
 		MsgType: pb.MessageType_MsgRequestVoteResponse,
-		Reject: reject,
+		Reject:  reject,
 	}
 	r.msgs = append(r.msgs, msg)
 }
@@ -405,7 +403,7 @@ func (r *Raft) handleStartElection(m pb.Message) {
 		r.becomeLeader()
 		return
 	}
-	for peer := range r.Prs{
+	for peer := range r.Prs {
 		if peer == r.id {
 			continue
 		}
@@ -437,7 +435,7 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 	threshold := len(r.Prs) / 2
 	if !m.Reject {
 		r.voteGranted += 1
-		if  r.voteGranted > threshold {
+		if r.voteGranted > threshold {
 			r.becomeLeader()
 		}
 	} else {
