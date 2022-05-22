@@ -62,7 +62,7 @@ func newLog(storage Storage) *RaftLog {
 	}
 	firstIndex, _ := storage.FirstIndex()
 	lastIndex, _ := storage.LastIndex()
-	entries, _ := storage.Entries(firstIndex, lastIndex + 1)
+	entries, _ := storage.Entries(firstIndex, lastIndex+1)
 
 	l.stabled = lastIndex
 	l.committed = firstIndex - 1
@@ -98,7 +98,7 @@ func (l *RaftLog) LastIndex() uint64 {
 	if len == 0 {
 		return l.stabled
 	} else {
-		return l.entries[len - 1].Index
+		return l.entries[len-1].Index
 	}
 }
 
@@ -106,7 +106,7 @@ func (l *RaftLog) LastIndex() uint64 {
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	if len(l.entries) > 0 && i >= l.firstIndex {
-		return l.entries[i - l.firstIndex].Term, nil
+		return l.entries[i-l.firstIndex].Term, nil
 	}
 
 	return 0, nil
