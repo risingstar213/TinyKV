@@ -50,13 +50,26 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
+	firstIndex uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return nil
+	l := &RaftLog{
+		storage: storage,
+	}
+	firstIndex, _ := storage.FirstIndex()
+	lastIndex, _ := storage.LastIndex()
+	entries, _ := storage.Entries(firstIndex, lastIndex + 1)
+
+	l.stabled = lastIndex
+	l.committed = firstIndex - 1
+	l.applied = firstIndex - 1
+	l.firstIndex = firstIndex
+	l.entries = entries
+	return l
 }
 
 // We need to compact the log entries in some point of time like
@@ -81,11 +94,28 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return 0
+	len := len(l.entries)
+	if len == 0 {
+		return l.stabled
+	} else {
+		return l.entries[len - 1].Index
+	}
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
+	if len(l.entries) > 0 && i >= l.firstIndex {
+		return l.entries[i - l.firstIndex].Term, nil
+	}
+
 	return 0, nil
+}
+
+func (l *RaftLog) getSliceIndex(i uint64) int {
+	idx := int(i - l.firstIndex)
+	if idx < 0 {
+		panic("toSliceIndex: index < 0")
+	}
+	return idx
 }
