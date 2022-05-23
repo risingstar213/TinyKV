@@ -82,12 +82,18 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
+	if len(l.entries) > 0 {
+		return l.entries[l.stabled-l.firstIndex+1:]
+	}
 	return nil
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
+	if len(l.entries) > 0 {
+		return l.entries[l.applied-l.firstIndex+1 : l.committed-l.firstIndex+1]
+	}
 	return nil
 }
 
@@ -96,7 +102,7 @@ func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	len := len(l.entries)
 	if len == 0 {
-		return l.stabled
+		return l.committed
 	} else {
 		return l.entries[len-1].Index
 	}
@@ -118,4 +124,33 @@ func (l *RaftLog) getSliceIndex(i uint64) int {
 		panic("toSliceIndex: index < 0")
 	}
 	return idx
+}
+
+func (l *RaftLog) maybeAppend(m pb.Message) (uint64, bool) {
+	if m.Index > l.LastIndex() {
+		return l.LastIndex(), false
+	}
+	var term uint64
+	term, _ = l.Term(m.Index)
+	// Cannot ensure the modification correct
+	if term != m.LogTerm {
+		// sliceIndex := l.getSliceIndex(m.Index)
+		// l.entries = l.entries[:sliceIndex]
+		// l.stabled = min(l.stabled, m.Index - 1)
+		return m.Index - 1, false
+	}
+	for i := 0; i < len(m.Entries); i++ {
+		if m.Entries[i].Index <= l.LastIndex() {
+			term, _ = l.Term(m.Entries[i].Index)
+			sliceIndex := l.getSliceIndex(m.Entries[i].Index)
+			if term != m.Entries[i].Term {
+				l.entries[sliceIndex] = *m.Entries[i]
+				l.entries = l.entries[:sliceIndex+1]
+				l.stabled = min(l.stabled, m.Entries[i].Index-1)
+			}
+		} else {
+			l.entries = append(l.entries, *m.Entries[i])
+		}
+	}
+	return None, true
 }
