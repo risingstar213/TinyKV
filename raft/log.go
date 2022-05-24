@@ -63,7 +63,6 @@ func newLog(storage Storage) *RaftLog {
 	firstIndex, _ := storage.FirstIndex()
 	lastIndex, _ := storage.LastIndex()
 	entries, _ := storage.Entries(firstIndex, lastIndex+1)
-
 	l.stabled = lastIndex
 	l.committed = firstIndex - 1
 	l.applied = firstIndex - 1

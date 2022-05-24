@@ -375,7 +375,10 @@ func (r *Raft) becomeLeader() {
 		}
 	}
 	r.bcastAppend()
-
+	// only one node
+	if len(r.Prs) == 1 {
+		r.RaftLog.committed = r.Prs[r.id].Match
+	}
 }
 
 func (r *Raft) resetTime() {
