@@ -177,6 +177,15 @@ func (rn *RawNode) Ready() Ready {
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
+	hs := rn.getHardState()
+	if !IsEmptyHardState(hs) && !isHardStateEqual(hs, rn.hardState) {
+		return true
+	}
+	if len(rn.Raft.msgs) > 0 ||
+		len(rn.Raft.RaftLog.nextEnts()) > 0 ||
+		len(rn.Raft.RaftLog.unstableEntries()) > 0 {
+		return true
+	}
 	return false
 }
 
