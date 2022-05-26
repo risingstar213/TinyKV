@@ -1,0 +1,7 @@
+GO                  := GO111MODULE=on go
+GOTEST              := $(GO) test -v --count=1 --parallel=1 -p=1
+TEST_CLEAN          := rm -rf /tmp/*test-raftstore*
+
+project2b:
+	$(TEST_CLEAN)
+	$(GOTEST) ./kv/test_raftstore -run ^TestBasic2B$ || true

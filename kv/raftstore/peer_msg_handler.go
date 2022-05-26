@@ -6,10 +6,13 @@ import (
 
 	"github.com/Connor1996/badger/y"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/runner"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/snap"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/log"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
@@ -38,11 +41,53 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
+func (d *peerMsgHandler) processNormalEntry(kvWB *engine_util.WriteBatch, entry eraftpb.Entry) {
+	m := &raft_cmdpb.Request{}
+	m.Unmarshal(entry.Data)
+	switch m.CmdType {
+	case raft_cmdpb.CmdType_Get:
+	case raft_cmdpb.CmdType_Put:
+		kvWB.SetCF(m.Put.Cf, m.Put.Key, m.Put.Value)
+	case raft_cmdpb.CmdType_Delete:
+		kvWB.DeleteCF(m.Delete.Cf, m.Delete.Key)
+	case raft_cmdpb.CmdType_Snap:
+	default:
+		fmt.Errorf("No such CmdType in request.")
+	}
+	d.proposals
+}
+
 func (d *peerMsgHandler) HandleRaftReady() {
 	if d.stopped {
 		return
 	}
 	// Your Code Here (2B).
+	rn := d.peer.RaftGroup
+	if rn.HasReady() {
+		rd := rn.Ready()
+		result, err := d.peerStorage.SaveReadyState(&rd)
+		if err != nil {
+			panic(err)
+		}
+		if result != nil {
+
+		}
+		d.Send(d.ctx.trans, rd.Messages)
+		if len(rd.CommittedEntries) > 0 {
+			kvWB := engine_util.WriteBatch{}
+			for _, entry := range rd.CommittedEntries {
+				if entry.EntryType == eraftpb.EntryType_EntryNormal {
+					d.processNormalEntry(&kvWB, entry)
+				} else if entry.EntryType == eraftpb.EntryType_EntryConfChange {
+
+				} else {
+					fmt.Errorf("No such entry type.")
+				}
+			}
+			// err = kvWB.SetMeta(meta.ApplyStateKey(d.regionId), )
+		}
+		rn.Advance(rd)
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
