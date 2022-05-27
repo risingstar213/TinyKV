@@ -2,11 +2,14 @@ package raftstore
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Connor1996/badger/y"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
+
+	// "github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/runner"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/snap"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
@@ -41,7 +44,7 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
-func (d *peerMsgHandler) processNormalEntry(kvWB *engine_util.WriteBatch, entry eraftpb.Entry) {
+func (d *peerMsgHandler) processNormalEntry(kvWB *engine_util.WriteBatch, entry eraftpb.Entry) *engine_util.WriteBatch {
 	m := &raft_cmdpb.Request{}
 	m.Unmarshal(entry.Data)
 	switch m.CmdType {
@@ -51,10 +54,47 @@ func (d *peerMsgHandler) processNormalEntry(kvWB *engine_util.WriteBatch, entry 
 	case raft_cmdpb.CmdType_Delete:
 		kvWB.DeleteCF(m.Delete.Cf, m.Delete.Key)
 	case raft_cmdpb.CmdType_Snap:
-	default:
-		fmt.Errorf("No such CmdType in request.")
+	default: // do nothing temporarily
 	}
-	d.proposals
+	var prop *proposal = nil
+	if len(d.proposals) > 0 {
+		prop = d.proposals[0]
+	}
+	rsp := raft_cmdpb.Response{}
+	// Only index can determine the proposal
+	if prop != nil && prop.index == entry.Index {
+		switch m.CmdType {
+		case raft_cmdpb.CmdType_Get:
+			d.peerStorage.applyState.AppliedIndex = entry.Index
+			kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+			kvWB.WriteToDB(d.peerStorage.Engines.Kv)
+			val, err := engine_util.GetCF(d.peerStorage.Engines.Kv, m.Get.Cf, m.Get.Key)
+			if err == nil {
+				val = nil
+			}
+			kvWB = new(engine_util.WriteBatch)
+
+			rsp.CmdType = raft_cmdpb.CmdType_Get
+			rsp.Get = &raft_cmdpb.GetResponse{}
+			rsp.Get.Value = val
+
+		case raft_cmdpb.CmdType_Put:
+			rsp.CmdType = raft_cmdpb.CmdType_Put
+			rsp.Put = &raft_cmdpb.PutResponse{}
+		case raft_cmdpb.CmdType_Delete:
+			rsp.CmdType = raft_cmdpb.CmdType_Delete
+			rsp.Delete = &raft_cmdpb.DeleteResponse{}
+		case raft_cmdpb.CmdType_Snap:
+			rsp.CmdType = raft_cmdpb.CmdType_Snap
+		}
+		cmdRsp := raft_cmdpb.RaftCmdResponse{
+			Header:    &raft_cmdpb.RaftResponseHeader{},
+			Responses: []*raft_cmdpb.Response{&rsp},
+		}
+		prop.cb.Done(&cmdRsp)
+		d.proposals = d.proposals[1:]
+	}
+	return kvWB
 }
 
 func (d *peerMsgHandler) HandleRaftReady() {
@@ -62,6 +102,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	log.Debugf("%s %d peer is HandleRaftReady", d.Tag, d.PeerId())
 	rn := d.peer.RaftGroup
 	if rn.HasReady() {
 		rd := rn.Ready()
@@ -74,17 +115,20 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 		d.Send(d.ctx.trans, rd.Messages)
 		if len(rd.CommittedEntries) > 0 {
-			kvWB := engine_util.WriteBatch{}
+			kvWB := &engine_util.WriteBatch{}
 			for _, entry := range rd.CommittedEntries {
 				if entry.EntryType == eraftpb.EntryType_EntryNormal {
-					d.processNormalEntry(&kvWB, entry)
+					kvWB = d.processNormalEntry(kvWB, entry)
 				} else if entry.EntryType == eraftpb.EntryType_EntryConfChange {
 
 				} else {
 					fmt.Errorf("No such entry type.")
 				}
 			}
-			// err = kvWB.SetMeta(meta.ApplyStateKey(d.regionId), )
+			d.peerStorage.applyState.AppliedIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+			kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+			kvWB.WriteToDB(d.peerStorage.Engines.Kv)
+
 		}
 		rn.Advance(rd)
 	}
@@ -159,6 +203,32 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	log.Debugf("%s %d peer is proposeRaftCommand", d.Tag, d.PeerId())
+	var data []byte
+	data, err = msg.Marshal()
+	if err != nil {
+		cb.Done(ErrResp(err))
+	}
+	d.RaftGroup.Propose(data)
+	if n := len(d.proposals); n > 0 {
+		lastIndex := d.RaftGroup.Raft.RaftLog.LastIndex()
+		index := sort.Search(n, func(i int) bool {
+			return d.proposals[i].index > lastIndex
+		})
+		// stale, not applied due to some reasons
+		if index < n-1 {
+			for i := index; i < n; i++ {
+				d.proposals[i].cb.Done(ErrRespStaleCommand(d.proposals[i].term))
+			}
+			d.proposals = d.proposals[:index]
+		}
+	}
+	prop := proposal{
+		index: d.RaftGroup.Raft.RaftLog.LastIndex() + 1,
+		term:  d.RaftGroup.Raft.Term,
+		cb:    cb,
+	}
+	d.proposals = append(d.proposals, &prop)
 }
 
 func (d *peerMsgHandler) onTick() {

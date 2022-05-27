@@ -392,7 +392,7 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 
 	// Preprocess the state
-	if m.Term > r.Term {
+	if m.Term != None && m.Term > r.Term {
 		r.becomeFollower(m.Term, None)
 	}
 
