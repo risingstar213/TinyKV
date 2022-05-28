@@ -558,6 +558,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	if m.Index < r.RaftLog.committed {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, false)
+		return
 	} else {
 		index, appended := r.RaftLog.maybeAppend(m)
 		if appended {
@@ -573,6 +574,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 }
 
 func (r *Raft) handleAppendResponse(m pb.Message) {
+	/*
+		if m.Index == None {
+			panic("handleAppendResponse get index = 0 which is unreasonable.")
+		}*/
 	r.Prs[m.From].Match = m.Index
 	r.Prs[m.From].Next = m.Index + 1
 	if m.Reject {

@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"github.com/pingcap-incubator/tinykv/log"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -196,11 +197,16 @@ func (rn *RawNode) Advance(rd Ready) {
 	if !IsEmptyHardState(rd.HardState) {
 		rn.hardState = rd.HardState
 	}
+	rn.softState = rd.SoftState
 	if len(rd.Entries) > 0 {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
 	}
 	if len(rd.CommittedEntries) > 0 {
+		log.Debugf("old applied:%d, new applied:%d", rn.Raft.RaftLog.applied, rd.CommittedEntries[len(rd.CommittedEntries)-1].Index)
 		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+	}
+	if n := len(rd.Messages); n > 0 {
+		rn.Raft.msgs = rn.Raft.msgs[n:]
 	}
 	rn.softState = rn.getSoftState()
 }

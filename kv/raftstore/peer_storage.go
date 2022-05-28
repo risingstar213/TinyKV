@@ -311,7 +311,7 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	if len(entries) == 0 {
 		return nil
 	}
-	
+
 	regionID := ps.region.GetId()
 	for _, entry := range entries {
 		raftWB.SetMeta(meta.RaftLogKey(regionID, entry.Index), &entry)
