@@ -448,6 +448,8 @@ func (r *Raft) stepLeader(m pb.Message) {
 		r.handleSendHeartbeat(m)
 	case pb.MessageType_MsgPropose:
 		r.handleProposeAppend(m)
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
 	case pb.MessageType_MsgAppendResponse:
 		r.handleAppendResponse(m)
 	case pb.MessageType_MsgRequestVote:
@@ -556,7 +558,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.Lead = m.From
 	r.Vote = None
 
-	if m.Index < r.RaftLog.committed {
+	if m.Index + 1 < r.RaftLog.committed {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, false)
 		return
 	} else {

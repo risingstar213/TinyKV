@@ -55,11 +55,19 @@ func (d *peerMsgHandler) processRequest(kvWB *engine_util.WriteBatch, entry eraf
 	case raft_cmdpb.CmdType_Snap:
 	default: // do nothing temporarily
 	}
-	var prop *proposal = nil
-	if len(d.proposals) > 0 {
-		prop = d.proposals[0]
-	}
+
 	rsp := raft_cmdpb.Response{}
+	var prop *proposal = nil
+	for len(d.proposals) > 0 {
+		prop = d.proposals[0]
+		if prop.index >= entry.Index {
+			break
+		} else {
+			prop.cb.Done(ErrRespStaleCommand(prop.term))
+			d.proposals = d.proposals[1:]
+			prop = nil
+		}
+	}
 	// Only index can determine the proposal
 	if prop != nil && prop.index == entry.Index {
 		switch m.CmdType {
@@ -69,7 +77,7 @@ func (d *peerMsgHandler) processRequest(kvWB *engine_util.WriteBatch, entry eraf
 			kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
 			kvWB.WriteToDB(d.peerStorage.Engines.Kv)
 			val, err := engine_util.GetCF(d.peerStorage.Engines.Kv, m.Get.Cf, m.Get.Key)
-			if err == nil {
+			if err != nil {
 				val = nil
 			}
 			kvWB = new(engine_util.WriteBatch)
@@ -164,7 +172,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				} else if entry.EntryType == eraftpb.EntryType_EntryConfChange {
 
 				} else {
-					fmt.Errorf("No such entry type.")
+					panic("No such entry type.")
 				}
 			}
 			d.peerStorage.applyState.AppliedIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
@@ -257,9 +265,9 @@ func (d *peerMsgHandler) proposeRequest(msg *raft_cmdpb.RaftCmdRequest, cb *mess
 			return d.proposals[i].index > lastIndex
 		})
 		// stale, not applied due to some reasons
-		if index < n-1 {
+		if index < n {
 			for i := index; i < n; i++ {
-				// log.Debugf("%s %d peer is send back msg invalid", d.Tag, d.PeerId())
+				log.Debugf("%s %d peer is send back msg invalid", d.Tag, d.PeerId())
 				d.proposals[i].cb.Done(ErrRespStaleCommand(d.proposals[i].term))
 			}
 			d.proposals = d.proposals[:index]

@@ -4,4 +4,4 @@ TEST_CLEAN          := rm -rf /tmp/*test-raftstore*
 
 project2b:
 	$(TEST_CLEAN)
-	$(GOTEST) ./kv/test_raftstore -run ^TestBasic2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestManyPartitionsOneClient2B$ || true
