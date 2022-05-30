@@ -244,7 +244,6 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 }
 
 func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
-	// .RaftGroup.ProposeConfChange()
 	log.Debugf("%s %d peer is proposeAdminRequest", d.Tag, d.PeerId())
 }
 

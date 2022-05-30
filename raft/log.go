@@ -122,7 +122,9 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	if len(l.entries) > 0 && i >= l.firstIndex {
 		return l.entries[i-l.firstIndex].Term, nil
 	}
-
+	if l.pendingSnapshot != nil {
+		return l.pendingSnapshot.Metadata.Term, nil
+	}
 	return 0, nil
 }
 

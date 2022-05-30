@@ -299,6 +299,21 @@ func (r *Raft) sendRequestVoteResponse(to uint64, reject bool) {
 	r.msgs = append(r.msgs, msg)
 }
 
+func (r *Raft) sendSnapShot(to uint64) {
+	snapshot, err := r.RaftLog.storage.Snapshot()
+	if err != nil {
+		panic(err)
+	}
+	msg := pb.Message{
+		From:     r.id,
+		To:       to,
+		Term:     r.Term,
+		MsgType:  pb.MessageType_MsgSnapshot,
+		Snapshot: &snapshot,
+	}
+	r.msgs = append(r.msgs, msg)
+}
+
 // send append msg
 func (r *Raft) bcastAppend() {
 	for peer := range r.Prs {
@@ -306,6 +321,16 @@ func (r *Raft) bcastAppend() {
 			continue
 		}
 		r.sendAppend(peer)
+	}
+}
+
+// send herat beat
+func (r *Raft) bcastHeartbeat() {
+	for peer := range r.Prs {
+		if peer == r.id {
+			continue
+		}
+		r.sendHeartbeat(peer)
 	}
 }
 
@@ -462,12 +487,7 @@ func (r *Raft) stepLeader(m pb.Message) {
 
 // local
 func (r *Raft) handleSendHeartbeat(m pb.Message) {
-	for peer := range r.Prs {
-		if peer == r.id {
-			continue
-		}
-		r.sendHeartbeat(peer)
-	}
+	r.bcastHeartbeat()
 }
 
 // local
@@ -559,7 +579,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.Lead = m.From
 	r.Vote = None
 
-	if m.Index + 1 < r.RaftLog.committed {
+	if m.Index+1 < r.RaftLog.committed {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, false)
 		return
 	} else {
@@ -577,10 +597,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 }
 
 func (r *Raft) handleAppendResponse(m pb.Message) {
-	/*
-		if m.Index == None {
-			panic("handleAppendResponse get index = 0 which is unreasonable.")
-		}*/
 	r.Prs[m.From].Match = m.Index
 	r.Prs[m.From].Next = m.Index + 1
 	if m.Reject {
@@ -616,6 +632,21 @@ func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	meta := m.Snapshot.Metadata
+	if meta.Index < r.RaftLog.committed {
+		return
+	}
+	r.Term = m.Term
+	r.RaftLog.entries = make([]pb.Entry, 0)
+	r.Prs = make(map[uint64]*Progress)
+	r.RaftLog.firstIndex = meta.Index + 1
+	r.RaftLog.committed = meta.Index
+	r.RaftLog.applied = meta.Index
+	r.RaftLog.stabled = meta.Index
+	for _, peer := range meta.ConfState.Nodes {
+		r.Prs[peer] = &Progress{}
+	}
+	r.RaftLog.pendingSnapshot = m.Snapshot
 }
 
 // addNode add a new node to raft group
