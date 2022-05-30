@@ -202,8 +202,9 @@ func newRaft(c *Config) *Raft {
 	}
 	r.becomeFollower(0, None)
 	r.Term, r.Vote, r.RaftLog.committed = hardSt.GetTerm(), hardSt.GetVote(), hardSt.GetCommit()
+
 	if c.Applied > 0 {
-		r.RaftLog.applied = c.Applied
+		r.RaftLog.applied = min(c.Applied, r.RaftLog.applied)
 	}
 	return r
 }

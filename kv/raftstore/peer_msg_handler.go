@@ -60,7 +60,7 @@ func (d *peerMsgHandler) processRequest(kvWB *engine_util.WriteBatch, entry eraf
 	var prop *proposal = nil
 	for len(d.proposals) > 0 {
 		prop = d.proposals[0]
-		if prop.index >= entry.Index {
+		if prop.index > entry.Index || (prop.index == entry.Index && prop.term == entry.Term) {
 			break
 		} else {
 			prop.cb.Done(ErrRespStaleCommand(prop.term))
@@ -68,11 +68,10 @@ func (d *peerMsgHandler) processRequest(kvWB *engine_util.WriteBatch, entry eraf
 			prop = nil
 		}
 	}
-	// Only index can determine the proposal
-	if prop != nil && prop.index == entry.Index {
+	if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
 		switch m.CmdType {
 		case raft_cmdpb.CmdType_Get:
-			log.Debugf("get")
+			// log.Debugf("get")
 			d.peerStorage.applyState.AppliedIndex = entry.Index
 			kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
 			kvWB.WriteToDB(d.peerStorage.Engines.Kv)
@@ -87,15 +86,15 @@ func (d *peerMsgHandler) processRequest(kvWB *engine_util.WriteBatch, entry eraf
 			rsp.Get.Value = val
 
 		case raft_cmdpb.CmdType_Put:
-			log.Debugf("put")
+			// log.Debugf("put")
 			rsp.CmdType = raft_cmdpb.CmdType_Put
 			rsp.Put = &raft_cmdpb.PutResponse{}
 		case raft_cmdpb.CmdType_Delete:
-			log.Debugf("delete")
+			// log.Debugf("delete")
 			rsp.CmdType = raft_cmdpb.CmdType_Delete
 			rsp.Delete = &raft_cmdpb.DeleteResponse{}
 		case raft_cmdpb.CmdType_Snap:
-			log.Debugf("snap")
+			// log.Debugf("snap")
 			d.peerStorage.applyState.AppliedIndex = entry.Index
 			kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
 			err := kvWB.WriteToDB(d.peerStorage.Engines.Kv)
@@ -107,10 +106,8 @@ func (d *peerMsgHandler) processRequest(kvWB *engine_util.WriteBatch, entry eraf
 			rsp.CmdType = raft_cmdpb.CmdType_Snap
 			rsp.Snap = &raft_cmdpb.SnapResponse{Region: d.Region()}
 			prop.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
-			log.Debugf("region: %v", d.Region())
 
 		default:
-			log.Debugf("Invalid")
 		}
 		cmdRsp := raft_cmdpb.RaftCmdResponse{
 			Header:    &raft_cmdpb.RaftResponseHeader{},

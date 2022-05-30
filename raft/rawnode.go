@@ -158,12 +158,10 @@ func (rn *RawNode) Ready() Ready {
 	rd := Ready{}
 	ss := rn.getSoftState()
 	if !ss.equal(rn.softState) {
-		// rn.softState = ss
 		rd.SoftState = ss
 	}
 	hs := rn.getHardState()
 	if !isHardStateEqual(hs, rn.hardState) {
-		// rn.hardState = hs
 		rd.HardState = hs
 	}
 	rd.Entries = rn.Raft.RaftLog.unstableEntries()
