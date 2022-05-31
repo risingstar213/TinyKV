@@ -19,6 +19,7 @@ import (
 	"math/rand"
 	"sort"
 
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -214,6 +215,10 @@ func newRaft(c *Config) *Raft {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	pr := r.Prs[to]
+	if pr.Next < r.RaftLog.firstIndex {
+		r.sendSnapShot(to)
+		return false
+	}
 	term, err := r.RaftLog.Term(pr.Next - 1)
 	if err != nil {
 		return false
@@ -302,8 +307,9 @@ func (r *Raft) sendRequestVoteResponse(to uint64, reject bool) {
 func (r *Raft) sendSnapShot(to uint64) {
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
-		panic(err)
+		return
 	}
+	log.Debugf("%d send snapshot to %d.", r.id, to)
 	msg := pb.Message{
 		From:     r.id,
 		To:       to,
@@ -312,6 +318,8 @@ func (r *Raft) sendSnapShot(to uint64) {
 		Snapshot: &snapshot,
 	}
 	r.msgs = append(r.msgs, msg)
+	// avoid open two many snapshot task
+	r.Prs[to].Next = snapshot.Metadata.Index + 1
 }
 
 // send append msg
@@ -442,6 +450,8 @@ func (r *Raft) stepFollower(m pb.Message) {
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	}
@@ -460,6 +470,8 @@ func (r *Raft) stepCandidator(m pb.Message) {
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 		r.handleRequestVoteResponse(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		if m.Term == r.Term {
 			r.becomeFollower(r.Term, m.From)
@@ -480,6 +492,8 @@ func (r *Raft) stepLeader(m pb.Message) {
 		r.handleAppendResponse(m)
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 		r.handleHeartbeatResponse(m)
 	}
@@ -634,9 +648,10 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
 	meta := m.Snapshot.Metadata
 	if meta.Index < r.RaftLog.committed {
+		r.sendAppendResponse(m.From, r.RaftLog.committed, true)
 		return
 	}
-	r.Term = m.Term
+	r.becomeFollower(m.Term, m.From)
 	r.RaftLog.entries = make([]pb.Entry, 0)
 	r.Prs = make(map[uint64]*Progress)
 	r.RaftLog.firstIndex = meta.Index + 1
@@ -647,6 +662,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		r.Prs[peer] = &Progress{}
 	}
 	r.RaftLog.pendingSnapshot = m.Snapshot
+	r.sendAppendResponse(m.From, meta.Index, false)
 }
 
 // addNode add a new node to raft group

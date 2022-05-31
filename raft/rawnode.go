@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"github.com/pingcap-incubator/tinykv/log"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -170,6 +169,9 @@ func (rn *RawNode) Ready() Ready {
 	}
 	rd.CommittedEntries = rn.Raft.RaftLog.nextEnts()
 	rd.Messages = rn.Raft.msgs
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		rd.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
+	}
 	return rd
 }
 
@@ -185,6 +187,9 @@ func (rn *RawNode) HasReady() bool {
 		len(rn.Raft.RaftLog.unstableEntries()) > 0 {
 		return true
 	}
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		return true
+	}
 	return false
 }
 
@@ -195,18 +200,20 @@ func (rn *RawNode) Advance(rd Ready) {
 	if !IsEmptyHardState(rd.HardState) {
 		rn.hardState = rd.HardState
 	}
-	rn.softState = rd.SoftState
+	rn.softState = rn.getSoftState()
 	if len(rd.Entries) > 0 {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
 	}
 	if len(rd.CommittedEntries) > 0 {
-		log.Debugf("old applied:%d, new applied:%d", rn.Raft.RaftLog.applied, rd.CommittedEntries[len(rd.CommittedEntries)-1].Index)
 		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 	}
 	if n := len(rd.Messages); n > 0 {
 		rn.Raft.msgs = rn.Raft.msgs[n:]
 	}
-	rn.softState = rn.getSoftState()
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		rn.Raft.RaftLog.pendingSnapshot = nil
+	}
+	rn.Raft.RaftLog.maybeCompact()
 }
 
 // GetProgress return the Progress of this node and its peers, if this

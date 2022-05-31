@@ -15,7 +15,6 @@
 package raft
 
 import (
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -82,6 +81,18 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	first, err := l.storage.FirstIndex()
+	if err != nil {
+		return
+	}
+	if first > l.firstIndex && len(l.entries) > 0 {
+		entries := l.entries[first-l.firstIndex:]
+		l.entries = make([]pb.Entry, len(entries))
+		copy(l.entries, entries)
+	}
+	if first > l.firstIndex {
+		l.firstIndex = first
+	}
 }
 
 // unstableEntries return all the unstable entries
@@ -108,11 +119,17 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	len := len(l.entries)
-	if len == 0 {
-		return l.committed
-	} else {
+	if !IsEmptySnap(l.pendingSnapshot) {
+		return l.pendingSnapshot.Metadata.Index
+	}
+	if len := len(l.entries); len > 0 {
 		return l.entries[len-1].Index
+	}
+	index, err := l.storage.LastIndex()
+	if err != nil {
+		return index
+	} else {
+		return l.committed
 	}
 }
 
@@ -122,7 +139,11 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	if len(l.entries) > 0 && i >= l.firstIndex {
 		return l.entries[i-l.firstIndex].Term, nil
 	}
-	if l.pendingSnapshot != nil {
+	term, err := l.storage.Term(i)
+	if err == nil {
+		return term, err
+	}
+	if l.pendingSnapshot != nil && i == l.firstIndex-1 {
 		return l.pendingSnapshot.Metadata.Term, nil
 	}
 	return 0, nil
@@ -154,7 +175,6 @@ func (l *RaftLog) maybeAppend(m pb.Message) (uint64, bool) {
 			term, _ = l.Term(m.Entries[i].Index)
 			sliceIndex := l.getSliceIndex(m.Entries[i].Index)
 			if term != m.Entries[i].Term {
-				log.Debugf("Unreasonable rewrite")
 				l.entries[sliceIndex] = *m.Entries[i]
 				l.entries = l.entries[:sliceIndex+1]
 				l.stabled = min(l.stabled, m.Entries[i].Index-1)

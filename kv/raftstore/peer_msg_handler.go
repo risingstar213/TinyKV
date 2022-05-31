@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"time"
 
@@ -9,7 +10,6 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 
-	// "github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/runner"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/snap"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
@@ -121,6 +121,17 @@ func (d *peerMsgHandler) processRequest(kvWB *engine_util.WriteBatch, entry eraf
 }
 
 func (d *peerMsgHandler) processAdminRequest(kvWB *engine_util.WriteBatch, entry eraftpb.Entry, msg *raft_cmdpb.RaftCmdRequest) {
+	switch msg.AdminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		compactlogs := msg.AdminRequest.GetCompactLog()
+		truncatedstate := d.peerStorage.applyState.TruncatedState
+		if compactlogs.CompactIndex >= truncatedstate.Index {
+			truncatedstate.Index = compactlogs.CompactIndex
+			truncatedstate.Term = compactlogs.CompactTerm
+			kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+			d.ScheduleCompactLog(compactlogs.CompactIndex)
+		}
+	}
 	return
 }
 
@@ -153,8 +164,15 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		if err != nil {
 			panic(err)
 		}
-		if result != nil {
-
+		if result != nil && !reflect.DeepEqual(result.PrevRegion, result.Region) {
+			d.peerStorage.SetRegion(result.Region)
+			// update the global context
+			storemeta := d.ctx.storeMeta
+			storemeta.Lock()
+			storemeta.regions[d.regionId] = result.Region
+			storemeta.regionRanges.Delete(&regionItem{region: result.PrevRegion})
+			storemeta.regionRanges.ReplaceOrInsert(&regionItem{region: result.Region})
+			storemeta.Unlock()
 		}
 		d.Send(d.ctx.trans, rd.Messages)
 		if len(rd.CommittedEntries) > 0 {
@@ -245,6 +263,14 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 
 func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	log.Debugf("%s %d peer is proposeAdminRequest", d.Tag, d.PeerId())
+	switch msg.AdminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		data, err := msg.Marshal()
+		if err != nil {
+			panic(err)
+		}
+		d.RaftGroup.Propose(data)
+	}
 }
 
 func (d *peerMsgHandler) proposeRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
