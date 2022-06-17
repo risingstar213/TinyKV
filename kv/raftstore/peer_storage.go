@@ -330,7 +330,6 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	for i := last + 1; i <= prevLast; i++ {
 		raftWB.DeleteMeta(meta.RaftLogKey(regionID, i))
 	}
-	log.Debugf("%d Update the index %d from %d .", ps, last, ps.raftState.LastIndex)
 	ps.raftState.LastIndex = last
 	ps.raftState.LastTerm = entries[len(entries)-1].Term
 	return nil
@@ -355,7 +354,6 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		}
 		ps.clearExtraData(snapData.Region)
 	}
-	log.Debugf("%d Apply snap shot %d from %d.", ps, snapshot.Metadata.Index, ps.raftState.LastIndex)
 	// raftstate.HardState is updated according to raft.Ready
 	ps.raftState.LastIndex = snapshot.Metadata.Index
 	ps.raftState.LastTerm = snapshot.Metadata.Term

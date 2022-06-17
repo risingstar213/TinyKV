@@ -322,6 +322,17 @@ func (r *Raft) sendSnapShot(to uint64) {
 	r.Prs[to].Next = snapshot.Metadata.Index + 1
 }
 
+// send timeout
+func (r *Raft) sendTimeoutNow(to uint64) {
+	msg := pb.Message{
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+		MsgType: pb.MessageType_MsgTimeoutNow,
+	}
+	r.msgs = append(r.msgs, msg)
+}
+
 // send append msg
 func (r *Raft) bcastAppend() {
 	for peer := range r.Prs {
@@ -445,7 +456,7 @@ func (r *Raft) Step(m pb.Message) error {
 func (r *Raft) stepFollower(m pb.Message) {
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
-		r.handleStartElection(m)
+		r.handleStartElection()
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVote:
@@ -454,13 +465,17 @@ func (r *Raft) stepFollower(m pb.Message) {
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.handleTimeoutNow(m)
 	}
 }
 
 func (r *Raft) stepCandidator(m pb.Message) {
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
-		r.handleStartElection(m)
+		r.handleStartElection()
 	case pb.MessageType_MsgAppend:
 		if m.Term == r.Term {
 			r.becomeFollower(r.Term, m.From)
@@ -477,6 +492,10 @@ func (r *Raft) stepCandidator(m pb.Message) {
 			r.becomeFollower(r.Term, m.From)
 			r.handleHeartbeat(m)
 		}
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.handleTimeoutNow(m)
 	}
 }
 
@@ -496,6 +515,8 @@ func (r *Raft) stepLeader(m pb.Message) {
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 		r.handleHeartbeatResponse(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
 	}
 }
 
@@ -505,7 +526,7 @@ func (r *Raft) handleSendHeartbeat(m pb.Message) {
 }
 
 // local
-func (r *Raft) handleStartElection(m pb.Message) {
+func (r *Raft) handleStartElection() {
 	r.becomeCandidate()
 	r.randomElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 	r.votes = make(map[uint64]bool)
@@ -619,6 +640,11 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 		if r.maybeCommit() {
 			r.bcastAppend()
 		}
+
+		if m.From == r.leadTransferee && m.Index == r.RaftLog.LastIndex() {
+			r.sendTimeoutNow(m.From)
+			r.leadTransferee = None
+		}
 	}
 }
 
@@ -665,14 +691,64 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.sendAppendResponse(m.From, meta.Index, false)
 }
 
+func (r *Raft) resendTransferLeader(m pb.Message) {
+	m.To = r.Lead
+	r.msgs = append(r.msgs, m)
+}
+
+func (r *Raft) handleTransferLeader(m pb.Message) {
+	if r.State != StateLeader {
+		r.resendTransferLeader(m)
+	} else {
+		if m.From == r.id {
+			return
+		}
+		if _, ok := r.Prs[m.From]; !ok {
+			return
+		}
+		r.leadTransferee = m.From
+		if r.Prs[m.From].Match != r.RaftLog.LastIndex() {
+			r.sendAppend(m.From)
+		} else {
+			r.sendTimeoutNow(m.From)
+			r.leadTransferee = None
+		}
+	}
+}
+
+func (r *Raft) handleTimeoutNow(m pb.Message) {
+	if _, ok := r.Prs[r.id]; !ok {
+		return
+	}
+	r.Term = m.Term
+	// send MsgHup Message is also right.
+	r.handleStartElection()
+}
+
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; !ok {
+		// suppose there is no entry stored in the new node.
+		r.Prs[id] = &Progress{
+			Match: 0,
+			Next:  1,
+		}
+	}
+	r.PendingConfIndex = None
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; ok {
+		delete(r.Prs, id)
+		// delete a node can mean some entries can be commited
+		if r.State == StateLeader && r.maybeCommit() {
+			r.bcastAppend()
+		}
+	}
+	r.PendingConfIndex = None
 }
 
 func (r *Raft) maybeCommit() bool {
