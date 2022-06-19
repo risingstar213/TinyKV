@@ -205,7 +205,7 @@ func newRaft(c *Config) *Raft {
 	r.Term, r.Vote, r.RaftLog.committed = hardSt.GetTerm(), hardSt.GetVote(), hardSt.GetCommit()
 
 	if c.Applied > 0 {
-		r.RaftLog.applied = min(c.Applied, r.RaftLog.applied)
+		r.RaftLog.applied = c.Applied
 	}
 	return r
 }
@@ -406,7 +406,7 @@ func (r *Raft) becomeLeader() {
 	r.resetTime()
 	r.State = StateLeader
 	r.Lead = r.id
-	r.leadTransferee = 0
+	r.leadTransferee = None
 
 	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{Term: r.Term, Index: r.RaftLog.LastIndex() + 1})
 	// *** update progress state ***
@@ -556,6 +556,13 @@ func (r *Raft) handleProposeAppend(m pb.Message) {
 	for i, entry := range m.Entries {
 		entry.Term = r.Term
 		entry.Index = lastIndex + uint64(i) + 1
+		if entry.EntryType == pb.EntryType_EntryConfChange {
+			if r.PendingConfIndex != None {
+				continue
+			}
+			log.Debugf("get new ConfChange")
+			r.PendingConfIndex = entry.Index
+		}
 		r.RaftLog.entries = append(r.RaftLog.entries, *entry)
 	}
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
@@ -618,7 +625,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, false)
 		return
 	} else {
-		index, appended := r.RaftLog.maybeAppend(m)
+		index, appended := r.maybeAppend(m)
 		if appended {
 			r.sendAppendResponse(m.From, r.RaftLog.LastIndex(), false)
 		} else {
@@ -768,4 +775,39 @@ func (r *Raft) maybeCommit() bool {
 	} else {
 		return false
 	}
+}
+
+func (r *Raft) maybeAppend(m pb.Message) (uint64, bool) {
+	if m.Index > r.RaftLog.LastIndex() {
+		return r.RaftLog.LastIndex(), false
+	}
+	var term uint64
+	term, _ = r.RaftLog.Term(m.Index)
+	// Cannot ensure the modification correct
+	if term != m.LogTerm {
+		// sliceIndex := l.getSliceIndex(m.Index)
+		// l.entries = l.entries[:sliceIndex]
+		// l.stabled = min(l.stabled, m.Index - 1)
+		return m.Index - 1, false
+	}
+	for i := 0; i < len(m.Entries); i++ {
+		if m.Entries[i].Index <= r.RaftLog.LastIndex() {
+			term, _ = r.RaftLog.Term(m.Entries[i].Index)
+			sliceIndex := r.RaftLog.getSliceIndex(m.Entries[i].Index)
+			if term != m.Entries[i].Term {
+				r.RaftLog.entries[sliceIndex] = *m.Entries[i]
+				if m.Entries[i].EntryType == pb.EntryType_EntryConfChange {
+					r.PendingConfIndex = m.Entries[i].Index
+				}
+				r.RaftLog.entries = r.RaftLog.entries[:sliceIndex+1]
+				r.RaftLog.stabled = min(r.RaftLog.stabled, m.Entries[i].Index-1)
+			}
+		} else {
+			r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
+			if m.Entries[i].EntryType == pb.EntryType_EntryConfChange {
+				r.PendingConfIndex = m.Entries[i].Index
+			}
+		}
+	}
+	return None, true
 }

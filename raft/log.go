@@ -68,6 +68,7 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		panic(err)
 	}
+
 	l.stabled = lastIndex
 	l.committed = firstIndex - 1
 	l.applied = firstIndex - 1
@@ -155,33 +156,4 @@ func (l *RaftLog) getSliceIndex(i uint64) int {
 		panic("toSliceIndex: index < 0")
 	}
 	return idx
-}
-
-func (l *RaftLog) maybeAppend(m pb.Message) (uint64, bool) {
-	if m.Index > l.LastIndex() {
-		return l.LastIndex(), false
-	}
-	var term uint64
-	term, _ = l.Term(m.Index)
-	// Cannot ensure the modification correct
-	if term != m.LogTerm {
-		// sliceIndex := l.getSliceIndex(m.Index)
-		// l.entries = l.entries[:sliceIndex]
-		// l.stabled = min(l.stabled, m.Index - 1)
-		return m.Index - 1, false
-	}
-	for i := 0; i < len(m.Entries); i++ {
-		if m.Entries[i].Index <= l.LastIndex() {
-			term, _ = l.Term(m.Entries[i].Index)
-			sliceIndex := l.getSliceIndex(m.Entries[i].Index)
-			if term != m.Entries[i].Term {
-				l.entries[sliceIndex] = *m.Entries[i]
-				l.entries = l.entries[:sliceIndex+1]
-				l.stabled = min(l.stabled, m.Entries[i].Index-1)
-			}
-		} else {
-			l.entries = append(l.entries, *m.Entries[i])
-		}
-	}
-	return None, true
 }
