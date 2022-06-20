@@ -60,8 +60,41 @@ func (d *peerMsgHandler) getPropodal(entry eraftpb.Entry) *proposal {
 	return prop
 }
 
+func getKeyFromRequest(m *raft_cmdpb.Request) []byte {
+	switch m.CmdType {
+	case raft_cmdpb.CmdType_Get:
+		return m.Get.Key
+	case raft_cmdpb.CmdType_Put:
+		return m.Put.Key
+	case raft_cmdpb.CmdType_Delete:
+		return m.Delete.Key
+	case raft_cmdpb.CmdType_Snap:
+		return nil
+	}
+	return nil
+}
+
 func (d *peerMsgHandler) processRequest(kvWB *engine_util.WriteBatch, entry eraftpb.Entry, msg *raft_cmdpb.RaftCmdRequest) *engine_util.WriteBatch {
 	m := msg.Requests[0]
+	key := getKeyFromRequest(m)
+	var prop *proposal
+
+	if err := util.CheckRegionEpoch(msg, d.Region(), true); err != nil {
+		prop = d.getPropodal(entry)
+		if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
+			prop.cb.Done(ErrResp(err))
+		}
+		return kvWB
+	}
+
+	if err := util.CheckKeyInRegion(key, d.Region()); key != nil && err != nil {
+		prop = d.getPropodal(entry)
+		if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
+			prop.cb.Done(ErrResp(err))
+		}
+		return kvWB
+	}
+
 	switch m.CmdType {
 	case raft_cmdpb.CmdType_Get:
 	case raft_cmdpb.CmdType_Put:
@@ -73,7 +106,7 @@ func (d *peerMsgHandler) processRequest(kvWB *engine_util.WriteBatch, entry eraf
 	}
 
 	rsp := raft_cmdpb.Response{}
-	var prop *proposal = d.getPropodal(entry)
+	prop = d.getPropodal(entry)
 	if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
 		switch m.CmdType {
 		case raft_cmdpb.CmdType_Get:
@@ -142,6 +175,24 @@ func (d *peerMsgHandler) processAdminRequest(kvWB *engine_util.WriteBatch, entry
 		req := msg.AdminRequest.GetSplit()
 		region := d.Region()
 
+		// Check epoch
+		if err := util.CheckRegionEpoch(msg, d.Region(), true); err != nil {
+			var prop *proposal = d.getPropodal(entry)
+			if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
+				prop.cb.Done(ErrResp(err))
+			}
+			return kvWB
+		}
+
+		// Check key
+		if err := util.CheckKeyInRegion(req.SplitKey, region); err != nil {
+			var prop *proposal = d.getPropodal(entry)
+			if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
+				prop.cb.Done(ErrResp(err))
+			}
+			return kvWB
+		}
+
 		storeMeta := d.ctx.storeMeta
 		// A big lock ensure the security
 		storeMeta.Lock()
@@ -180,6 +231,8 @@ func (d *peerMsgHandler) processAdminRequest(kvWB *engine_util.WriteBatch, entry
 		region.RegionEpoch.Version += 1
 		region.EndKey = req.SplitKey
 		meta.WriteRegionState(kvWB, region, rspb.PeerState_Normal)
+		// d.SizeDiffHint = 0
+		// d.ApproximateSize = new(uint64)
 
 		// update the ctx
 		storeMeta.regions[d.regionId] = region
@@ -239,16 +292,28 @@ func (d *peerMsgHandler) searchInPeers(region *metapb.Region, peer *metapb.Peer)
 
 func (d *peerMsgHandler) processConfChange(kvWB *engine_util.WriteBatch, entry eraftpb.Entry) *engine_util.WriteBatch {
 	log.Debugf("processConfChange in region %d, peer %d, store %d", d.regionId, d.PeerId(), d.storeID())
+	
 	var cc eraftpb.ConfChange
 	err := cc.Unmarshal(entry.Data)
 	if err != nil {
 		panic(err)
 	}
-	req := raft_cmdpb.ChangePeerRequest{}
-	err = req.Unmarshal(cc.Context)
+	msg := raft_cmdpb.RaftCmdRequest{}
+	err = msg.Unmarshal(cc.Context)
 	if err != nil {
 		panic(err)
 	}
+
+	// Check epoch
+	if err := util.CheckRegionEpoch(&msg, d.Region(), true); err != nil {
+		var prop *proposal = d.getPropodal(entry)
+		if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
+			prop.cb.Done(ErrResp(err))
+		}
+		return kvWB
+	}
+
+	req := msg.AdminRequest.GetChangePeer()
 
 	region := d.Region()
 	log.Debugf("new confver: %d, peer %d", region.RegionEpoch.ConfVer, d.PeerId())
@@ -486,7 +551,7 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 		d.appendProposal(cb)
 
 		req := msg.AdminRequest.GetChangePeer()
-		context, err := req.Marshal()
+		context, err := msg.Marshal()
 		if err != nil {
 			panic(err)
 		}
@@ -499,6 +564,11 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 		d.RaftGroup.ProposeConfChange(cc)
 
 	case raft_cmdpb.AdminCmdType_Split:
+		err := util.CheckKeyInRegion(msg.AdminRequest.Split.SplitKey, d.Region())
+		if err != nil {
+			cb.Done(ErrResp(err))
+			return
+		}
 		data, err := msg.Marshal()
 		if err != nil {
 			panic(err)
@@ -513,6 +583,11 @@ func (d *peerMsgHandler) proposeRequest(msg *raft_cmdpb.RaftCmdRequest, cb *mess
 	// log.Debugf("%s %d peer is proposeRequest", d.Tag, d.PeerId())
 	var data []byte
 	var err error
+	key := getKeyFromRequest(msg.Requests[0])
+	if err = util.CheckKeyInRegion(key, d.Region()); key != nil && err != nil {
+		cb.Done(ErrResp(err))
+		return
+	}
 	data, err = msg.Marshal()
 	if err != nil {
 		cb.Done(ErrResp(err))
