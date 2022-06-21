@@ -147,7 +147,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	if l.pendingSnapshot != nil && i == l.firstIndex-1 {
 		return l.pendingSnapshot.Metadata.Term, nil
 	}
-	return 0, nil
+	return 0, ErrCompacted
 }
 
 func (l *RaftLog) getSliceIndex(i uint64) int {

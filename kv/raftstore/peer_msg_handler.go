@@ -45,7 +45,7 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
-func (d *peerMsgHandler) getPropodal(entry eraftpb.Entry) *proposal {
+func (d *peerMsgHandler) getProposal(entry eraftpb.Entry) *proposal {
 	var prop *proposal = nil
 	for len(d.proposals) > 0 {
 		prop = d.proposals[0]
@@ -80,19 +80,23 @@ func (d *peerMsgHandler) processRequest(kvWB *engine_util.WriteBatch, entry eraf
 	var prop *proposal
 
 	if err := util.CheckRegionEpoch(msg, d.Region(), true); err != nil {
-		prop = d.getPropodal(entry)
+		prop = d.getProposal(entry)
 		if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
 			prop.cb.Done(ErrResp(err))
+			d.proposals = d.proposals[1:]
 		}
 		return kvWB
 	}
 
-	if err := util.CheckKeyInRegion(key, d.Region()); key != nil && err != nil {
-		prop = d.getPropodal(entry)
-		if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
-			prop.cb.Done(ErrResp(err))
+	if key != nil {
+		if err := util.CheckKeyInRegion(key, d.Region()); err != nil {
+			prop = d.getProposal(entry)
+			if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
+				prop.cb.Done(ErrResp(err))
+				d.proposals = d.proposals[1:]
+			}
+			return kvWB
 		}
-		return kvWB
 	}
 
 	switch m.CmdType {
@@ -106,7 +110,7 @@ func (d *peerMsgHandler) processRequest(kvWB *engine_util.WriteBatch, entry eraf
 	}
 
 	rsp := raft_cmdpb.Response{}
-	prop = d.getPropodal(entry)
+	prop = d.getProposal(entry)
 	if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
 		switch m.CmdType {
 		case raft_cmdpb.CmdType_Get:
@@ -177,18 +181,20 @@ func (d *peerMsgHandler) processAdminRequest(kvWB *engine_util.WriteBatch, entry
 
 		// Check epoch
 		if err := util.CheckRegionEpoch(msg, d.Region(), true); err != nil {
-			var prop *proposal = d.getPropodal(entry)
+			var prop *proposal = d.getProposal(entry)
 			if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
 				prop.cb.Done(ErrResp(err))
+				d.proposals = d.proposals[1:]
 			}
 			return kvWB
 		}
 
 		// Check key
 		if err := util.CheckKeyInRegion(req.SplitKey, region); err != nil {
-			var prop *proposal = d.getPropodal(entry)
+			var prop *proposal = d.getProposal(entry)
 			if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
 				prop.cb.Done(ErrResp(err))
+				d.proposals = d.proposals[1:]
 			}
 			return kvWB
 		}
@@ -248,7 +254,7 @@ func (d *peerMsgHandler) processAdminRequest(kvWB *engine_util.WriteBatch, entry
 			panic(err)
 		}
 
-		var prop *proposal = d.getPropodal(entry)
+		var prop *proposal = d.getProposal(entry)
 		if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
 			cmdRsp := &raft_cmdpb.RaftCmdResponse{
 				Header: &raft_cmdpb.RaftResponseHeader{},
@@ -281,9 +287,9 @@ func (d *peerMsgHandler) processNormalEntry(kvWB *engine_util.WriteBatch, entry 
 	return kvWB
 }
 
-func (d *peerMsgHandler) searchInPeers(region *metapb.Region, peer *metapb.Peer) int {
+func (d *peerMsgHandler) searchInPeers(region *metapb.Region, id uint64) int {
 	for i, p := range region.Peers {
-		if p.Id == peer.Id {
+		if p.Id == id {
 			return i
 		}
 	}
@@ -306,9 +312,10 @@ func (d *peerMsgHandler) processConfChange(kvWB *engine_util.WriteBatch, entry e
 
 	// Check epoch
 	if err := util.CheckRegionEpoch(&msg, d.Region(), true); err != nil {
-		var prop *proposal = d.getPropodal(entry)
+		var prop *proposal = d.getProposal(entry)
 		if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
 			prop.cb.Done(ErrResp(err))
+			d.proposals = d.proposals[1:]
 		}
 		return kvWB
 	}
@@ -320,7 +327,8 @@ func (d *peerMsgHandler) processConfChange(kvWB *engine_util.WriteBatch, entry e
 	switch req.ChangeType {
 	case eraftpb.ConfChangeType_AddNode:
 		// insert when it doesn't exsit in region.peers
-		if d.searchInPeers(region, req.Peer) == len(region.Peers) {
+		if d.searchInPeers(region, req.Peer.Id) == len(region.Peers) {
+			log.Debugf("%d Remove %d", d.PeerId(), cc.NodeId)
 			region.Peers = append(region.Peers, req.Peer)
 			region.RegionEpoch.ConfVer += 1
 			storeMeta := d.ctx.storeMeta
@@ -329,8 +337,6 @@ func (d *peerMsgHandler) processConfChange(kvWB *engine_util.WriteBatch, entry e
 			storeMeta.Unlock()
 			meta.WriteRegionState(kvWB, region, rspb.PeerState_Normal)
 			d.insertPeerCache(req.Peer)
-			// update PeersStartPendingTime
-			d.CollectPendingPeers()
 		}
 	case eraftpb.ConfChangeType_RemoveNode:
 		if cc.NodeId == d.PeerId() {
@@ -338,8 +344,9 @@ func (d *peerMsgHandler) processConfChange(kvWB *engine_util.WriteBatch, entry e
 			return kvWB
 		}
 		// delete when it exsit in region.peers
-		idx := d.searchInPeers(region, req.Peer)
+		idx := d.searchInPeers(region, req.Peer.Id)
 		if idx < len(region.Peers) {
+			log.Debugf("%d Remove %d", d.PeerId(), cc.NodeId)
 			// delete in region.Peers
 			region.Peers = append(region.Peers[0:idx], region.Peers[idx+1:]...)
 			region.RegionEpoch.ConfVer += 1
@@ -357,7 +364,7 @@ func (d *peerMsgHandler) processConfChange(kvWB *engine_util.WriteBatch, entry e
 		log.Debugf("Unknown type of ConfChange")
 	}
 
-	var prop *proposal = d.getPropodal(entry)
+	var prop *proposal = d.getProposal(entry)
 
 	if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
 		cmdRsp := &raft_cmdpb.RaftCmdResponse{
@@ -372,6 +379,11 @@ func (d *peerMsgHandler) processConfChange(kvWB *engine_util.WriteBatch, entry e
 	}
 
 	d.RaftGroup.ApplyConfChange(cc)
+
+	// update PeersStartPendingTime
+	if d.IsLeader() {
+		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+	}
 
 	return kvWB
 }
@@ -400,6 +412,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			storeMeta.Unlock()
 		}
 		d.Send(d.ctx.trans, rd.Messages)
+		log.Debugf("msgs length: %d", len(rd.Messages))
 		if len(rd.CommittedEntries) > 0 {
 			kvWB := &engine_util.WriteBatch{}
 			for _, entry := range rd.CommittedEntries {
@@ -498,7 +511,7 @@ func (d *peerMsgHandler) sendStaleCommandResp() {
 		index := sort.Search(n, func(i int) bool {
 			return d.proposals[i].index > lastIndex
 		})
-		// stale, not applied due to some reasons
+		// stale, not applied due to some reason
 		if index < n {
 			for i := index; i < n; i++ {
 				log.Debugf("%s %d peer is send back msg invalid", d.Tag, d.PeerId())
@@ -581,16 +594,17 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 
 func (d *peerMsgHandler) proposeRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	// log.Debugf("%s %d peer is proposeRequest", d.Tag, d.PeerId())
-	var data []byte
-	var err error
 	key := getKeyFromRequest(msg.Requests[0])
-	if err = util.CheckKeyInRegion(key, d.Region()); key != nil && err != nil {
-		cb.Done(ErrResp(err))
-		return
+	if key != nil {
+		if err := util.CheckKeyInRegion(key, d.Region()); err != nil {
+			cb.Done(ErrResp(err))
+			return
+		}
 	}
-	data, err = msg.Marshal()
+	data, err := msg.Marshal()
 	if err != nil {
 		cb.Done(ErrResp(err))
+		return
 	}
 	d.sendStaleCommandResp()
 	d.appendProposal(cb)

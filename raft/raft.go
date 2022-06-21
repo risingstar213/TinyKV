@@ -214,7 +214,11 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	pr := r.Prs[to]
+	pr, ok := r.Prs[to]
+	if !ok {
+		log.Debugf("The node is shutdown")
+		return false
+	}
 	if pr.Next < r.RaftLog.firstIndex {
 		r.sendSnapShot(to)
 		return false
@@ -305,6 +309,9 @@ func (r *Raft) sendRequestVoteResponse(to uint64, reject bool) {
 }
 
 func (r *Raft) sendSnapShot(to uint64) {
+	if _, ok := r.Prs[to]; !ok {
+		return
+	}
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
 		return
@@ -621,10 +628,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.Lead = m.From
 	r.Vote = None
 
-	if m.Index+1 < r.RaftLog.committed {
+	/*if m.Index+1 < r.RaftLog.committed {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, false)
 		return
-	} else {
+	} else */{
 		index, appended := r.maybeAppend(m)
 		if appended {
 			r.sendAppendResponse(m.From, r.RaftLog.LastIndex(), false)
@@ -639,8 +646,17 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 }
 
 func (r *Raft) handleAppendResponse(m pb.Message) {
+	if _, ok := r.Prs[m.From]; !ok {
+		return
+	}
 	r.Prs[m.From].Match = m.Index
 	r.Prs[m.From].Next = m.Index + 1
+/*
+	if m.Index + 1 > r.RaftLog.LastIndex() {
+		r.sendSnapShot(m.From)
+		return
+	}
+*/
 	if m.Reject {
 		r.sendAppend(m.From)
 	} else {
@@ -782,15 +798,20 @@ func (r *Raft) maybeAppend(m pb.Message) (uint64, bool) {
 		return r.RaftLog.LastIndex(), false
 	}
 	var term uint64
-	term, _ = r.RaftLog.Term(m.Index)
-	// Cannot ensure the modification correct
-	if term != m.LogTerm {
-		// sliceIndex := l.getSliceIndex(m.Index)
-		// l.entries = l.entries[:sliceIndex]
-		// l.stabled = min(l.stabled, m.Index - 1)
-		return m.Index - 1, false
+	if m.Index + 1 >= r.RaftLog.firstIndex {
+		term, _ = r.RaftLog.Term(m.Index)
+		// Cannot ensure the modification correct
+		if term != m.LogTerm {
+			// sliceIndex := l.getSliceIndex(m.Index)
+			// l.entries = l.entries[:sliceIndex]
+			// l.stabled = min(l.stabled, m.Index - 1)
+			return m.Index - 1, false
+		}
 	}
 	for i := 0; i < len(m.Entries); i++ {
+		if m.Entries[i].Index < r.RaftLog.firstIndex {
+			continue
+		}
 		if m.Entries[i].Index <= r.RaftLog.LastIndex() {
 			term, _ = r.RaftLog.Term(m.Entries[i].Index)
 			sliceIndex := r.RaftLog.getSliceIndex(m.Entries[i].Index)
