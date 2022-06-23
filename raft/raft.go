@@ -229,7 +229,12 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 	n := len(r.RaftLog.entries)
 	var ents []*pb.Entry
+	lst := pr.Next - 1
 	for i := r.RaftLog.getSliceIndex(pr.Next); i < n; i++ {
+		if r.RaftLog.entries[i].Index != lst+1 {
+			log.Fatalf("No matching! lst:%d, now:%d", lst, r.RaftLog.entries[i].Index)
+		}
+		lst += 1
 		ents = append(ents, &r.RaftLog.entries[i])
 	}
 
@@ -599,6 +604,7 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 	}
 
 	r.Vote = m.From
+	r.Lead = None
 	r.sendRequestVoteResponse(m.From, false)
 }
 
@@ -620,28 +626,33 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	if m.Term < r.Term {
+	if m.Term > 0 && m.Term < r.Term {
 		r.sendAppendResponse(m.From, None, true)
 		return
 	}
 	r.resetTime()
 	r.Lead = m.From
 	r.Vote = None
+	if !IsEmptySnap(r.RaftLog.pendingSnapshot) {
+		r.sendAppendResponse(m.From, r.RaftLog.LastIndex(), false)
+		return
+	}
 
 	/*if m.Index+1 < r.RaftLog.committed {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, false)
 		return
-	} else */{
-		index, appended := r.maybeAppend(m)
-		if appended {
-			r.sendAppendResponse(m.From, r.RaftLog.LastIndex(), false)
-		} else {
-			r.sendAppendResponse(m.From, index, true)
-			return
-		}
+	} else */
+
+	index, appended := r.maybeAppend(m)
+	if appended {
+		r.sendAppendResponse(m.From, r.RaftLog.LastIndex(), false)
+	} else {
+		r.sendAppendResponse(m.From, index, true)
+		return
 	}
-	if m.Commit > r.RaftLog.committed { // not r.RaftLog.lastIndex()
+	if m.Commit > r.RaftLog.committed {
 		r.RaftLog.committed = min(m.Commit, m.Index+uint64(len(m.Entries)))
+		log.Debugf("%d commit: %d", r.id, r.RaftLog.committed)
 	}
 }
 
@@ -649,14 +660,17 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	if _, ok := r.Prs[m.From]; !ok {
 		return
 	}
-	r.Prs[m.From].Match = m.Index
-	r.Prs[m.From].Next = m.Index + 1
-/*
-	if m.Index + 1 > r.RaftLog.LastIndex() {
-		r.sendSnapShot(m.From)
+
+	// stale
+	if m.Term != None && m.Term < r.Term {
 		return
 	}
-*/
+	if m.Index > r.RaftLog.LastIndex() {
+		panic("m.Index > r.RaftLog.LastIndex() in handleAppendResponse")
+	}
+	r.Prs[m.From].Match = m.Index
+	r.Prs[m.From].Next = m.Index + 1
+
 	if m.Reject {
 		r.sendAppend(m.From)
 	} else {
@@ -753,6 +767,7 @@ func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
 	if _, ok := r.Prs[id]; !ok {
 		// suppose there is no entry stored in the new node.
+		log.Debugf("Add Node")
 		r.Prs[id] = &Progress{
 			Match: 0,
 			Next:  1,
@@ -765,6 +780,7 @@ func (r *Raft) addNode(id uint64) {
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
 	if _, ok := r.Prs[id]; ok {
+		log.Debugf("Remove Node")
 		delete(r.Prs, id)
 		// delete a node can mean some entries can be commited
 		if r.State == StateLeader && r.maybeCommit() {
@@ -798,7 +814,7 @@ func (r *Raft) maybeAppend(m pb.Message) (uint64, bool) {
 		return r.RaftLog.LastIndex(), false
 	}
 	var term uint64
-	if m.Index + 1 >= r.RaftLog.firstIndex {
+	if m.Index+1 >= r.RaftLog.firstIndex {
 		term, _ = r.RaftLog.Term(m.Index)
 		// Cannot ensure the modification correct
 		if term != m.LogTerm {
@@ -815,7 +831,15 @@ func (r *Raft) maybeAppend(m pb.Message) (uint64, bool) {
 		if m.Entries[i].Index <= r.RaftLog.LastIndex() {
 			term, _ = r.RaftLog.Term(m.Entries[i].Index)
 			sliceIndex := r.RaftLog.getSliceIndex(m.Entries[i].Index)
+			if r.RaftLog.entries[sliceIndex].Index != m.Entries[i].Index {
+				log.Fatalf("%d No matching in maybe append! new:%d old:%d", r.id, m.Entries[i].Index, r.RaftLog.entries[sliceIndex].Index)
+			}
 			if term != m.Entries[i].Term {
+				if m.Entries[i].Index <= r.RaftLog.applied {
+					// panic("Unreasonbale Index in MayBeAppend")
+					// reform leader of sending snapshot
+					return 0, false
+				}
 				r.RaftLog.entries[sliceIndex] = *m.Entries[i]
 				if m.Entries[i].EntryType == pb.EntryType_EntryConfChange {
 					r.PendingConfIndex = m.Entries[i].Index
@@ -824,6 +848,9 @@ func (r *Raft) maybeAppend(m pb.Message) (uint64, bool) {
 				r.RaftLog.stabled = min(r.RaftLog.stabled, m.Entries[i].Index-1)
 			}
 		} else {
+			if m.Entries[i].Index != r.RaftLog.LastIndex()+1 && IsEmptySnap(r.RaftLog.pendingSnapshot) {
+				log.Fatalf("%d No matching in maybe append! snap: %v firstIndex: %d new:%d last:%d", r.id, IsEmptySnap(r.RaftLog.pendingSnapshot), r.RaftLog.firstIndex, m.Entries[i].Index, r.RaftLog.LastIndex())
+			}
 			r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
 			if m.Entries[i].EntryType == pb.EntryType_EntryConfChange {
 				r.PendingConfIndex = m.Entries[i].Index
