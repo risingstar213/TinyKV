@@ -276,9 +276,43 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 	return nil
 }
 
+func (c *RaftCluster) isStale(meta *metapb.Region) (bool, *metapb.Region) {
+	newRegionEpoch := meta.RegionEpoch
+	// So strange, newRegionEpoch is likely to be nil.
+	if newRegionEpoch == nil {
+		return true, nil
+	}
+	oldMeta, _ := c.GetRegionByID(meta.Id)
+	if oldMeta != nil {
+		oldRegionEpoch := oldMeta.GetRegionEpoch()
+		if newRegionEpoch.ConfVer < oldRegionEpoch.ConfVer || newRegionEpoch.Version < oldRegionEpoch.Version {
+			return true, oldMeta
+		}
+	} else {
+		// limit <= 0 means no limit.
+		regions := c.ScanRegions(meta.StartKey, meta.EndKey, 0)
+		for _, region := range regions {
+			oldMeta = region.GetMeta()
+			oldRegionEpoch := oldMeta.GetRegionEpoch()
+			if newRegionEpoch.ConfVer < oldRegionEpoch.ConfVer || newRegionEpoch.Version < oldRegionEpoch.Version {
+				return true, oldMeta
+			}
+		}
+	}
+	// bigger than any of the regions than overlap with it
+	return false, nil
+}
+
 // processRegionHeartbeat updates the region information.
 func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	// Your Code Here (3C).
+	if isStale, oldMeta := c.isStale(region.GetMeta()); isStale {
+		return ErrRegionIsStale(region.GetMeta(), oldMeta)
+	}
+	c.putRegion(region)
+	for id := range region.GetStoreIds() {
+		c.updateStoreStatusLocked(id)
+	}
 
 	return nil
 }

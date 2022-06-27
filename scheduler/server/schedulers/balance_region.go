@@ -14,6 +14,9 @@
 package schedulers
 
 import (
+	"fmt"
+	"sort"
+
 	"github.com/pingcap-incubator/tinykv/scheduler/server/core"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/operator"
@@ -75,8 +78,102 @@ func (s *balanceRegionScheduler) IsScheduleAllowed(cluster opt.Cluster) bool {
 	return s.opController.OperatorCount(operator.OpRegion) < cluster.GetRegionScheduleLimit()
 }
 
+type storePair struct {
+	regionSize int64
+	id         uint64
+}
+
+type storePairSlice []*storePair
+
+func (s storePairSlice) Len() int {
+	return len(s)
+}
+
+func (s storePairSlice) Swap(i, j int) {
+	s[i], s[j] = s[j], s[i]
+}
+
+func (s storePairSlice) Less(i, j int) bool {
+	return s[i].regionSize > s[j].regionSize
+}
+
 func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operator {
 	// Your Code Here (3C).
+	stores := cluster.GetStores()
+	slice := make(storePairSlice, 0)
+	for _, store := range stores {
+		// suitable
+		if store.IsUp() && store.DownTime() <= cluster.GetMaxStoreDownTime() {
+			slice = append(slice, &storePair{regionSize: store.GetRegionSize(), id: store.GetID()})
+		}
+	}
 
+	if len(slice) < 2 {
+		return nil
+	}
+
+	sort.Sort(slice)
+
+	var region *core.RegionInfo
+	var hasFound int = -1
+
+	for i := 0; i < len(slice); i++ {
+		var regions core.RegionsContainer
+		cluster.GetPendingRegionsWithLock(slice[i].id, func(rc core.RegionsContainer) { regions = rc })
+		region = regions.RandomRegion(nil, nil)
+		if region != nil {
+			hasFound = i
+			break
+		}
+
+		cluster.GetFollowersWithLock(slice[i].id, func(rc core.RegionsContainer) { regions = rc })
+		region = regions.RandomRegion(nil, nil)
+		if region != nil {
+			hasFound = i
+			break
+		}
+
+		cluster.GetLeadersWithLock(slice[i].id, func(rc core.RegionsContainer) { regions = rc })
+		region = regions.RandomRegion(nil, nil)
+		if region != nil {
+			hasFound = i
+			break
+		}
+	}
+
+	if hasFound >= 0 {
+		srcStore := cluster.GetStore(slice[hasFound].id)
+		var dstStore *core.StoreInfo = nil
+		storeIds := region.GetStoreIds()
+
+		if len(storeIds) < cluster.GetMaxReplicas() {
+			return nil
+		}
+		for j := len(slice) - 1; j > hasFound; j-- {
+			if _, ok := storeIds[slice[j].id]; !ok {
+				dstStore = cluster.GetStore(slice[j].id)
+				break
+			}
+		}
+		if dstStore == nil {
+			return nil
+		}
+
+		if srcStore.GetRegionSize()-dstStore.GetRegionSize() < region.GetApproximateSize()*2 {
+			return nil
+		}
+
+		peer, err := cluster.AllocPeer(dstStore.GetID())
+		if err != nil {
+			return nil
+		}
+		desc := fmt.Sprintf("move from %d to %d", srcStore.GetID(), dstStore.GetID())
+
+		opt, err := operator.CreateMovePeerOperator(desc, cluster, region, operator.OpBalance, srcStore.GetID(), dstStore.GetID(), peer.Id)
+		if err != nil {
+			return nil
+		}
+		return opt
+	}
 	return nil
 }

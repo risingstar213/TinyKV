@@ -255,7 +255,6 @@ func (d *peerMsgHandler) processAdminRequest(kvWB *engine_util.WriteBatch, entry
 			}
 		}
 
-
 		newPeerMetas := make([]*metapb.Peer, 0)
 		for i, peer := range region.Peers {
 			newPeerMetas = append(newPeerMetas, &metapb.Peer{
@@ -301,9 +300,9 @@ func (d *peerMsgHandler) processAdminRequest(kvWB *engine_util.WriteBatch, entry
 		storeMeta.Unlock()
 
 		// start the new node
-		err = d.ctx.router.send(newRegion.Id, message.Msg{ 
+		err = d.ctx.router.send(newRegion.Id, message.Msg{
 			RegionID: newRegion.Id,
-			Type: message.MsgTypeStart,
+			Type:     message.MsgTypeStart,
 		})
 		if err != nil {
 			panic(err)
@@ -358,7 +357,7 @@ func (d *peerMsgHandler) searchInPeers(region *metapb.Region, id uint64) int {
 
 func (d *peerMsgHandler) processConfChange(kvWB *engine_util.WriteBatch, entry eraftpb.Entry) *engine_util.WriteBatch {
 	log.Debugf("processConfChange in region %d, peer %d, store %d", d.regionId, d.PeerId(), d.storeID())
-	
+
 	var cc eraftpb.ConfChange
 	err := cc.Unmarshal(entry.Data)
 	if err != nil {
