@@ -182,6 +182,14 @@ func (txn *MvccTxn) MostRecentWrite(key []byte) (*Write, uint64, error) {
 	return nil, 0, nil
 }
 
+func (txn *MvccTxn) GetValueByStartTS(key []byte, ts uint64) ([]byte, error) {
+	val, err := txn.Reader.GetCF(engine_util.CfDefault, EncodeKey(key, ts))
+	if err != nil {
+		return nil, err
+	}
+	return val, nil
+}
+
 // EncodeKey encodes a user key and appends an encoded timestamp to a key. Keys and timestamps are encoded so that
 // timestamped keys are sorted first by key (ascending), then by timestamp (descending). The encoding is based on
 // https://github.com/facebook/mysql-5.6/wiki/MyRocks-record-format#memcomparable-format.
