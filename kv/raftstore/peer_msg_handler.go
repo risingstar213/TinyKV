@@ -103,10 +103,10 @@ func (d *peerMsgHandler) processRequest(kvWB *engine_util.WriteBatch, entry eraf
 	case raft_cmdpb.CmdType_Get:
 	case raft_cmdpb.CmdType_Put:
 		kvWB.SetCF(m.Put.Cf, m.Put.Key, m.Put.Value)
-		d.SizeDiffHint += uint64(len(m.Put.Key))
+		d.SizeDiffHint += 1
 	case raft_cmdpb.CmdType_Delete:
 		kvWB.DeleteCF(m.Delete.Cf, m.Delete.Key)
-		d.SizeDiffHint -= uint64(len(m.Delete.Key))
+		d.SizeDiffHint -= 1
 	case raft_cmdpb.CmdType_Snap:
 	default: // do nothing temporarily
 	}
@@ -228,6 +228,7 @@ func (d *peerMsgHandler) processAdminRequest(kvWB *engine_util.WriteBatch, entry
 		}
 
 		if len(req.NewPeerIds) != len(d.Region().Peers) {
+			log.Info("len(req.NewPeerIds) != len(d.Region().Peers)")
 			var prop *proposal = d.getProposal(entry)
 			if prop != nil && prop.index == entry.Index && prop.term == entry.Term {
 				prop.cb.Done(ErrRespStaleCommand(prop.term))
@@ -506,7 +507,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				// If stoped, no need to process other entries,
 				// and there is no need to call WriteToDB
 				if d.stopped {
-					d.sendDuplicateMessage(d.ctx.trans, rd.Messages)
+					d.Send(d.ctx.trans, rd.Messages)
 					return
 				}
 			}
@@ -659,6 +660,18 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 		err := util.CheckKeyInRegion(msg.AdminRequest.Split.SplitKey, d.Region())
 		if err != nil {
 			cb.Done(ErrResp(err))
+			return
+		}
+		region := d.Region()
+		if len(region.Peers) == 2 {
+			cb.Done(ErrRespStaleCommand(d.RaftGroup.Raft.Term))
+			var peer *metapb.Peer
+			if region.Peers[0].Id == d.PeerId() {
+				peer = region.Peers[1]
+			} else {
+				peer = region.Peers[0]
+			}
+			d.RaftGroup.TransferLeader(peer.GetId())
 			return
 		}
 		data, err := msg.Marshal()

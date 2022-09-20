@@ -318,7 +318,7 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	}
 
 	if first > entries[0].Index {
-		entries = entries[entries[0].Index-first:]
+		entries = entries[first-entries[0].Index:]
 	}
 
 	regionID := ps.region.GetId()

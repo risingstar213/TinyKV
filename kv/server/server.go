@@ -207,6 +207,10 @@ func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*
 				return nil, err
 			}
 
+			if write == nil {
+				return rsp, nil
+			}
+
 			// has been commited
 			if write.StartTS == req.GetStartVersion() && ts == req.GetCommitVersion() {
 				value, err := txn.GetValueByStartTS(key, write.StartTS)
